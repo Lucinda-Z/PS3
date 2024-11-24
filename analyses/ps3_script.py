@@ -16,6 +16,7 @@ from ps3.data import create_sample_split, load_transform
 # %%
 # load data
 df = load_transform()
+df.head()
 
 # %%
 # Train benchmark tweedie model. This is entirely based on the glum tutorial.
@@ -24,9 +25,9 @@ df["PurePremium"] = df["ClaimAmountCut"] / df["Exposure"]
 y = df["PurePremium"]
 # TODO: Why do you think, we divide by exposure here to arrive at our outcome variable?
 
-
 # TODO: use your create_sample_split function here
 # df = create_sample_split(...)
+def create_sample_split(df, id_column="IDpol"):
 train = np.where(df["sample"] == "train")
 test = np.where(df["sample"] == "test")
 df_train = df.iloc[train].copy()
@@ -89,12 +90,20 @@ numeric_cols = ["BonusMalus", "Density"]
 preprocessor = ColumnTransformer(
     transformers=[
         # TODO: Add numeric transforms here
+         ("num", Pipeline([
+            ("scaler", StandardScaler()),
+            ("spline", SplineTransformer(knots="quantile", include_bias=False))
+        ]), numeric_cols),
         ("cat", OneHotEncoder(sparse_output=False, drop="first"), categoricals),
     ]
 )
 preprocessor.set_output(transform="pandas")
 model_pipeline = Pipeline(
     # TODO: Define pipeline steps here
+    [
+    ("preprocessor", preprocessor),  # Apply preprocessing
+    ("glm", PoissonRegressor(fit_intercept=True))  # Generalized Linear Model
+]
 )
 
 # let's have a look at the pipeline
@@ -143,7 +152,10 @@ print(
 # Steps
 # 1: Define the modelling pipeline. Tip: This can simply be a LGBMRegressor based on X_train_t from before.
 # 2. Make sure we are choosing the correct objective for our estimator.
-
+model_pipeline = Pipeline([
+    ("preprocessor", preprocessor),  # Apply preprocessing
+    ("lgbm", LGBMRegressor())  # Use LightGBM as the estimator
+])
 model_pipeline.fit(X_train_t, y_train_t, estimate__sample_weight=w_train_t)
 df_test["pp_t_lgbm"] = model_pipeline.predict(X_test_t)
 df_train["pp_t_lgbm"] = model_pipeline.predict(X_train_t)
@@ -170,8 +182,26 @@ print(
 # Note: Typically we tune many more parameters and larger grids,
 # but to save compute time here, we focus on getting the learning rate
 # and the number of estimators somewhat aligned -> tune learning_rate and n_estimators
-cv = GridSearchCV(
+model_pipeline = Pipeline([
+    ("preprocessor", preprocessor),  # Apply preprocessing
+    ("lgbm", LGBMRegressor())  # Use LightGBM as the estimator
+])
 
+param_grid = {
+    "lgbm__learning_rate": [0.01, 0.05, 0.1],      # Control step size in boosting
+    "lgbm__n_estimators": [50, 100, 200],          # Number of boosting iterations
+    "lgbm__max_depth": [-1, 3, 5, 7],              # Limit the depth of each tree
+    "lgbm__min_child_samples": [10, 20, 50],       # Minimum number of samples per leaf
+    "lgbm__colsample_bytree": [0.6, 0.8, 1.0]      # Subsample ratio of columns for each tree
+}
+
+cv = GridSearchCV(
+    estimator=model_pipeline,      # The pipeline to tune
+    param_grid=param_grid,         # The parameter grid to search
+    scoring="neg_mean_squared_error",  # Use MSE as the evaluation metric
+    cv=5,                          # 5-fold cross-validation
+    verbose=2,                     # Print progress
+    n_jobs=-1                      # Use all available CPUs for parallelism
 )
 cv.fit(X_train_t, y_train_t, estimate__sample_weight=w_train_t)
 
